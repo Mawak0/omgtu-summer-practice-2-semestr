@@ -32,9 +32,50 @@
 
 #!csharp
 
+using System.Threading;
 //
 // Вычисление определенного интеграла
 //
+
+
+
+
+class ComputeThread{
+    double a;
+    double b;
+    Func<double, double> function;
+    double step;
+    public ComputeThread(double a, double b, Func<double, double> function, double step){
+        this.a = a;
+        this.b = b;
+        this.function = function;
+        this.step = step;
+    }
+    public void Compute(){
+        double summ = 0;
+        double current_posx = a;
+        int dist_count = Convert.ToInt32((b-a)/step); //кол-во отрезков
+        for (int i = 0; i <= dist_count-1; i++){
+
+            current_posx = a + step * i;
+
+            double p = (((function(current_posx)+function(current_posx+step))*step)/2);
+            summ += p;
+        }
+        bool writed = false;
+        while (!writed){
+            if (0 == Interlocked.CompareExchange(ref DefiniteIntegral.value_busy, 1, 0)){
+                DefiniteIntegral.current_summ += summ;
+                DefiniteIntegral.value_busy = 0;
+                writed = true;
+            }
+        }
+        Interlocked.Increment(ref DefiniteIntegral.threads_finished);
+    }
+}
+
+
+
 class DefiniteIntegral
 {
     //
@@ -43,10 +84,21 @@ class DefiniteIntegral
     // step - размер одного шага разбиения
     // threadsNumber - число потоков, которые используются для вычислений
     //
+
+    public static double current_summ = 0;
+    public static int value_busy = 0;
+    public static int threads_finished = 0;
     public static double Solve(double a, double b, Func<double, double> function, double step, int threadsnumber)
     {
-        // отсюда надо начинать реализацию задачи
-        return 0.0;
+        current_summ = 0;
+        threads_finished = 0;
+        for (int i = 0; i< threadsnumber; i++){
+            ComputeThread thread_start_obj = new ComputeThread(a+(b-a)/threadsnumber*i, a+(b-a)/threadsnumber*(i+1), function, step);
+            Thread t = new Thread(new ThreadStart(thread_start_obj.Compute));
+            t.Start();
+        }
+        while (threads_finished != threadsnumber){Thread.Sleep(10);}
+        return current_summ;
     }
 }
 
@@ -63,4 +115,4 @@ Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, X, 1e-4, 2), 1e-4);
 
 Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, SIN, 1e-5, 8), 1e-4);
 
-Assert.Equal(10, DefiniteIntegral.Solve(0, 10, X, 1e-6, 8), 1e-5);
+Assert.Equal(50, DefiniteIntegral.Solve(0, 10, X, 1e-6, 8), 1e-5);
