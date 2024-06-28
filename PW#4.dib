@@ -1,0 +1,228 @@
+#!meta
+
+{"kernelInfo":{"defaultKernelName":"csharp","items":[{"aliases":[],"languageName":"csharp","name":"csharp"}]}}
+
+#!markdown
+
+# Практическая работа №1. Знакомство с потоками.
+
+**Цель:** Познакомиться с возможностями класса System.Thread платформы .NET Framework.
+
+**Результаты:** После выполнения работы Вы сможете:
+1. Запускать длительные операции в отдельном потоке.
+2. Завершать поток.
+3. Дожидаться завершения выполнения потока. 
+
+
+**Материалы для самостоятельного изучения**.
+1. [Основы управления потоками](https://learn.microsoft.com/en-us/dotnet/standard/threading/managed-threading-basics)
+2. [Использование потоков](https://learn.microsoft.com/en-us/dotnet/standard/threading/using-threads-and-threading)
+3. [Примитив синхронизации Барьер](https://learn.microsoft.com/ru-ru/dotnet/standard/threading/barrier)
+4. [Interlocked операции](https://learn.microsoft.com/en-us/dotnet/api/system.threading.interlocked?view=net-8.0)
+
+## Задание.
+Реализовать вычисление определенного интеграла методом трапеции в несколько потоков.
+
+Отрезок, на котором происходит вычисление, разбивается на отрезки по количеству потоков. Для каждого отрезка значение 
+интеграла считается в отдельном потоке, после завершения вычисоения полученный рельтаты суммирутся.
+
+**Указание**.
+1. Для суммирования результатов удобно воспользоваться разделяемой переменной, к которой будут прибалятся результаты вычисления прямо в самом потоке. Для синхронизации операций сложения лучше всего восользоваться [Interlocked операцией](https://learn.microsoft.com/en-us/dotnet/api/system.threading.interlocked?view=net-8.0).
+2. Основная функция долна дождаться завершения всех потоков, которые вычисляют значение на отрезках, прежде чем возвратить результат. Для этого удобнее всего использовать Примитив синхронизации Барьер](https://learn.microsoft.com/ru-ru/dotnet/standard/threading/barrier).
+
+#!csharp
+
+using System.Threading;
+//
+// Вычисление определенного интеграла
+//
+
+
+
+
+class ComputeThread{
+    double a;
+    double b;
+    Func<double, double> function;
+    double step;
+    public ComputeThread(double a, double b, Func<double, double> function, double step){
+        this.a = a;
+        this.b = b;
+        this.function = function;
+        this.step = step;
+    }
+    public void Compute(){
+        double summ = 0;
+        double current_posx = a;
+        int dist_count = Convert.ToInt32((b-a)/step); //кол-во отрезков
+        for (int i = 0; i <= dist_count-1; i++){
+
+            current_posx = a + step * i;
+
+            double p = (((function(current_posx)+function(current_posx+step))*step)/2);
+            summ += p;
+        }
+        bool writed = false;
+        while (!writed){
+            if (0 == Interlocked.CompareExchange(ref DefiniteIntegral.value_busy, 1, 0)){
+                DefiniteIntegral.current_summ += summ;
+                DefiniteIntegral.value_busy = 0;
+                writed = true;
+            }
+        }
+        Interlocked.Increment(ref DefiniteIntegral.threads_finished);
+    }
+}
+
+
+
+class DefiniteIntegral
+{
+    //
+    // a, b - границы отрезка, на котором происходит вычисление опредленного интеграла
+    // function - функция, для которой вычисляется определнный интеграл
+    // step - размер одного шага разбиения
+    // threadsNumber - число потоков, которые используются для вычислений
+    //
+
+    public static double current_summ = 0;
+    public static int value_busy = 0;
+    public static int threads_finished = 0;
+    public static double Solve(double a, double b, Func<double, double> function, double step, int threadsnumber)
+    {
+        current_summ = 0;
+        threads_finished = 0;
+        double segment;
+        for (int i = 0; i< threadsnumber; i++){
+            segment = (b-a)/threadsnumber;
+            ComputeThread thread_start_obj = new ComputeThread(a+segment*i, a+segment*(i+1), function, step);
+            Thread t = new Thread(new ThreadStart(thread_start_obj.Compute));
+            t.Start();
+        }
+        while (threads_finished != threadsnumber){}
+        return current_summ;
+    }
+}
+
+
+
+class DefiniteIntegralNoThreading{
+        public static double Compute(double a, double b, Func<double, double> function, double step){
+        double summ = 0;
+        double current_posx = a;
+        int dist_count = Convert.ToInt32((b-a)/step); //кол-во отрезков
+        for (int i = 0; i <= dist_count-1; i++){
+
+            current_posx = a + step * i;
+
+            double p = (((function(current_posx)+function(current_posx+step))*step)/2);
+            summ += p;
+        }
+        return summ;
+    }
+}
+
+#!csharp
+
+#r "nuget: xunit, 2.8.1"
+
+using Xunit;
+using System.Diagnostics;
+
+var SIN = (double x) => Math.Sin(x);
+
+
+//подберем оптимальный размер шага
+double[] steps = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6];
+
+int min_time = int.MaxValue;
+double best_step;
+Stopwatch stopWatch = new Stopwatch();
+for (int i = 0; i < steps.Length; i++){
+    stopWatch.Reset();
+    stopWatch.Start();
+    try{
+        Assert.Equal(0, DefiniteIntegral.Solve(-100, 100, SIN, steps[i], 150), 1e-4);
+        stopWatch.Stop();
+        if (stopWatch.ElapsedTicks < min_time){
+            best_step = steps[i];
+            min_time = (int)stopWatch.ElapsedTicks;
+        }
+    }
+    catch{stopWatch.Stop();}
+}
+Console.WriteLine($"Оптимальный шаг {best_step}");
+
+#!csharp
+
+//#r "nuget: xunit, 2.8.1"
+//#r "nuget:ScottPlot, 5.0.*"
+
+using Xunit;
+using System.Diagnostics;
+using Microsoft.DotNet.Interactive.Formatting;
+
+Formatter.Register(typeof(ScottPlot.Plot), (p, w) => 
+    w.Write(((ScottPlot.Plot)p).GetImageHtml(400, 300)), HtmlFormatter.MimeType);
+
+var SIN = (double x) => Math.Sin(x);
+
+double step_to_test = 1e-4;
+int max_threads_num = 20;
+int test_iters = 1; // количество прогонов для одного значения количества потоков
+
+double[] dataX = new double[max_threads_num-1]; //время на вычисление для разного количества потоков
+double[] dataY = new double[max_threads_num-1]; // кол-во потоков
+for (int i = 0; i < dataY.Length; i++){dataY[i] = i+1;}
+//Для шага step_to_test подберем оптимальное число потоков, на которых достигается минимальное время выполнения функции Solve
+Stopwatch stopWatch = new Stopwatch();
+for (int threads_num = 1; threads_num < max_threads_num; threads_num++){
+    // для каждого значения количества потоков проведем несколько тестов и выберем усредненные значения
+    long aver_time = -1;
+
+    for (int iter = 0; iter < test_iters; iter++){
+        stopWatch.Reset();
+        stopWatch.Start();
+        DefiniteIntegral.Solve(-100, 100, SIN, step_to_test, threads_num);
+        stopWatch.Stop();
+        if (aver_time != -1){aver_time = (aver_time+stopWatch.ElapsedTicks)/2;}
+        else{aver_time = stopWatch.ElapsedTicks;}
+    }
+    
+    dataX[threads_num-1] = aver_time;
+
+}
+
+ScottPlot.Plot plt = new();
+plt.Add.Scatter(dataX, dataY);
+
+Console.WriteLine($"Оптимальное кол-во потоков {Array.IndexOf(dataX, dataX.Min())+1}");
+Console.WriteLine($"Наилучший результат {dataX.Min()} tick");
+
+// display the plot
+plt
+
+#!csharp
+
+//сравним наилучший полученный результат с однопоточной реализацией
+// наилучший результат - 112905 tick при 8 потоках
+//измерим скорость однопоточной реализации
+
+Stopwatch stopWatch = new Stopwatch();
+var SIN = (double x) => Math.Sin(x);
+stopWatch.Start();
+DefiniteIntegralNoThreading.Compute(-100, 100, SIN, 1e-4);
+stopWatch.Stop();
+Console.WriteLine(stopWatch.ElapsedTicks);
+
+//средний результат - 500000 tick в однопоточной реализации
+//многопоточная реализация эффективнее на 342.85%%
+
+#!markdown
+
+# Summary
+- размер шага, выбранный в п.4 - 1e-4;
+- оптимальное количество потоков из п.5 - 8 потоков;
+- время работы многопоточной версии -  112905 tick при 8 потоках;
+- время работы однопоточной версии - 500000 tick в однопоточной реализации;
+- многопоточная реализация эффективнее на 342.85%;
