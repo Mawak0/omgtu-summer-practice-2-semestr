@@ -56,11 +56,46 @@ class Message
 #!csharp
 
 using System.Collections.Concurrent;
+using System.Threading;
 
 var queue1 = new BlockingCollection<Message>(2); //очередь первого потока
 var queue2 = new BlockingCollection<Message>(2); //очередь второго потока
 
-// Здесь писать решение
+
+class MessageReader{
+    BlockingCollection<Message> queue_input;
+    BlockingCollection<Message> queue_output;
+    public MessageReader(ref BlockingCollection<Message> queue_input, ref BlockingCollection<Message> queue_output){
+        this.queue_input = queue_input;
+        this.queue_output = queue_output;
+    }
+
+    public void Loop(){
+        int messages_readed = 0;
+        foreach (Message mes in queue_input.GetConsumingEnumerable()){
+            mes.Handle();
+            messages_readed += 1;
+            if (messages_readed < 100){
+                queue_output.Add(new Message());
+            }
+            else {
+                queue_output.CompleteAdding();
+                break;
+            }
+        }
+    }
+}
+
+MessageReader reader1 = new MessageReader(ref queue1, ref queue2);
+MessageReader reader2 = new MessageReader(ref queue2, ref queue1);
+Thread t1 = new Thread(new ThreadStart(reader1.Loop));
+Thread t2 = new Thread(new ThreadStart(reader2.Loop));
+queue1.Add(new Message());
+queue2.Add(new Message());
+t1.Start();
+t2.Start();
+t1.Join();
+t2.Join();
 
 #!csharp
 
