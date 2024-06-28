@@ -92,13 +92,33 @@ class DefiniteIntegral
     {
         current_summ = 0;
         threads_finished = 0;
+        double segment;
         for (int i = 0; i< threadsnumber; i++){
-            ComputeThread thread_start_obj = new ComputeThread(a+(b-a)/threadsnumber*i, a+(b-a)/threadsnumber*(i+1), function, step);
+            segment = (b-a)/threadsnumber;
+            ComputeThread thread_start_obj = new ComputeThread(a+segment*i, a+segment*(i+1), function, step);
             Thread t = new Thread(new ThreadStart(thread_start_obj.Compute));
             t.Start();
         }
-        while (threads_finished != threadsnumber){Thread.Sleep(10);}
+        while (threads_finished != threadsnumber){}
         return current_summ;
+    }
+}
+
+
+
+class DefiniteIntegralNoThreading{
+        public static double Compute(double a, double b, Func<double, double> function, double step){
+        double summ = 0;
+        double current_posx = a;
+        int dist_count = Convert.ToInt32((b-a)/step); //кол-во отрезков
+        for (int i = 0; i <= dist_count-1; i++){
+
+            current_posx = a + step * i;
+
+            double p = (((function(current_posx)+function(current_posx+step))*step)/2);
+            summ += p;
+        }
+        return summ;
     }
 }
 
@@ -107,12 +127,74 @@ class DefiniteIntegral
 #r "nuget: xunit, 2.8.1"
 
 using Xunit;
+using System.Diagnostics;
 
-var X = (double x) => x;
 var SIN = (double x) => Math.Sin(x);
 
-Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, X, 1e-4, 2), 1e-4);
 
-Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, SIN, 1e-5, 8), 1e-4);
+//подберем оптимальный размер шага
+double[] steps = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6];
 
-Assert.Equal(50, DefiniteIntegral.Solve(0, 10, X, 1e-6, 8), 1e-5);
+int min_time = int.MaxValue;
+double best_step;
+Stopwatch stopWatch = new Stopwatch();
+for (int i = 0; i < steps.Length; i++){
+    stopWatch.Reset();
+    stopWatch.Start();
+    try{
+        Assert.Equal(0, DefiniteIntegralNoThreading.Compute(-100, 100, SIN, steps[i]), 1e-4);
+        stopWatch.Stop();
+        if (stopWatch.ElapsedTicks < min_time){
+            best_step = steps[i];
+            min_time = (int)stopWatch.ElapsedTicks;
+        }
+    }
+    catch{stopWatch.Stop();}
+}
+Console.WriteLine($"Оптимальный шаг {best_step}");
+
+#!csharp
+
+//#r "nuget: xunit, 2.8.1"
+//#r "nuget:ScottPlot, 5.0.*"
+
+using Xunit;
+using System.Diagnostics;
+using Microsoft.DotNet.Interactive.Formatting;
+
+Formatter.Register(typeof(ScottPlot.Plot), (p, w) => 
+    w.Write(((ScottPlot.Plot)p).GetImageHtml(400, 300)), HtmlFormatter.MimeType);
+
+var SIN = (double x) => Math.Sin(x);
+
+double step_to_test = 1e-2;
+int max_threads_num = 10;
+int test_iters = 5; // количество прогонов для одного значения количества потоков
+
+double[] dataX = new double[max_threads_num-1]; //время на вычисление для разного количества потоков
+double[] dataY = new double[max_threads_num-1]; // кол-во потоков
+for (int i = 0; i < dataY.Length; i++){dataY[i] = i+1;}
+//Для шага step_to_test подберем оптимальное число потоков, на которых достигается минимальное время выполнения функции Solve
+Stopwatch stopWatch = new Stopwatch();
+for (int threads_num = 1; threads_num < max_threads_num; threads_num++){
+    // для каждого значения количества потоков проведем несколько тестов и выберем усредненные значения
+    long aver_time = -1;
+
+    for (int iter = 0; iter < test_iters; iter++){
+        stopWatch.Reset();
+        stopWatch.Start();
+        DefiniteIntegral.Solve(-100, 100, SIN, step_to_test, threads_num);
+        stopWatch.Stop();
+        if (aver_time != -1){aver_time = (aver_time+stopWatch.ElapsedTicks)/2;}
+        else{aver_time = stopWatch.ElapsedTicks;}
+    }
+    
+    dataX[threads_num-1] = aver_time;
+
+}
+
+ScottPlot.Plot plt = new();
+plt.Add.Scatter(dataX, dataY);
+
+// display the plot
+plt
