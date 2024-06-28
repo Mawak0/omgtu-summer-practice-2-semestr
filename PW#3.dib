@@ -142,7 +142,7 @@ for (int i = 0; i < steps.Length; i++){
     stopWatch.Reset();
     stopWatch.Start();
     try{
-        Assert.Equal(0, DefiniteIntegralNoThreading.Compute(-100, 100, SIN, steps[i]), 1e-4);
+        Assert.Equal(0, DefiniteIntegral.Solve(-100, 100, SIN, steps[i], 150), 1e-4);
         stopWatch.Stop();
         if (stopWatch.ElapsedTicks < min_time){
             best_step = steps[i];
@@ -167,9 +167,9 @@ Formatter.Register(typeof(ScottPlot.Plot), (p, w) =>
 
 var SIN = (double x) => Math.Sin(x);
 
-double step_to_test = 1e-2;
-int max_threads_num = 10;
-int test_iters = 5; // количество прогонов для одного значения количества потоков
+double step_to_test = 1e-4;
+int max_threads_num = 20;
+int test_iters = 1; // количество прогонов для одного значения количества потоков
 
 double[] dataX = new double[max_threads_num-1]; //время на вычисление для разного количества потоков
 double[] dataY = new double[max_threads_num-1]; // кол-во потоков
@@ -196,5 +196,33 @@ for (int threads_num = 1; threads_num < max_threads_num; threads_num++){
 ScottPlot.Plot plt = new();
 plt.Add.Scatter(dataX, dataY);
 
+Console.WriteLine($"Оптимальное кол-во потоков {Array.IndexOf(dataX, dataX.Min())+1}");
+Console.WriteLine($"Наилучший результат {dataX.Min()} tick");
+
 // display the plot
 plt
+
+#!csharp
+
+//сравним наилучший полученный результат с однопоточной реализацией
+// наилучший результат - 112905 tick при 8 потоках
+//измерим скорость однопоточной реализации
+
+Stopwatch stopWatch = new Stopwatch();
+var SIN = (double x) => Math.Sin(x);
+stopWatch.Start();
+DefiniteIntegralNoThreading.Compute(-100, 100, SIN, 1e-4);
+stopWatch.Stop();
+Console.WriteLine(stopWatch.ElapsedTicks);
+
+//средний результат - 500000 tick в однопоточной реализации
+//многопоточная реализация эффективнее на 342.85%%
+
+#!markdown
+
+# Summary
+- размер шага, выбранный в п.4 - 1e-4;
+- оптимальное количество потоков из п.5 - 8 потоков;
+- время работы многопоточной версии -  112905 tick при 8 потоках;
+- время работы однопоточной версии - 500000 tick в однопоточной реализации;
+- многопоточная реализация эффективнее на 342.85%;
