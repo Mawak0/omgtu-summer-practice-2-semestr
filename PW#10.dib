@@ -36,3 +36,236 @@
 1. [Паттерн Сообщение](https://www.enterpriseintegrationpatterns.com/patterns/messaging/Message.html)
 2. [Паттерн Роутер - весь раздел про Роутеры](https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageRoutingIntro.html)
 3. [Обмен сообщеними](https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageConstructionIntro.html)
+
+#!csharp
+
+using System.Collections.Concurrent;
+using System.Threading;
+
+interface ICommand
+{
+    void Execute();
+    int GetId();
+    void ReadMessage(string message);
+}
+
+
+public class TestCommand : ICommand
+{
+    int counter = 0;
+    int id;
+    public TestCommand(int id){this.id = id;}
+    public void Execute()
+    {   
+        Thread.Sleep(200);
+        Console.WriteLine($"Команда {id} вызов {++counter}");
+    }
+    public int GetId(){return this.id;}
+    public void ReadMessage(string message){Console.WriteLine($"Команда {id} получила сообщение {message}");}
+}
+
+
+
+class HardStop : ICommand{
+    int counter = 0;
+    int id;
+    public HardStop(int id){this.id = id;}
+    public void Execute(){
+        Console.WriteLine("Executed HardStop");
+    }
+    public int GetId(){return this.id;}
+    public void ReadMessage(string message){Console.WriteLine($"Команда {id} получила сообщение {message}");}
+
+
+}
+
+class SoftStop : ICommand{
+    int counter = 0;
+    int id;
+    public SoftStop(int id){this.id = id;}
+    public void Execute(){
+        Console.WriteLine("Executed SoftStop");
+
+    }
+    public int GetId(){return this.id;}
+    public void ReadMessage(string message){Console.WriteLine($"Команда {id} получила сообщение {message}");}
+}
+
+class CTask{
+    public int run_count_need;
+    public ICommand com;
+    public CTask(ICommand com, int run_count_need){
+        this.com = com;
+        this.run_count_need = run_count_need;
+    }
+}
+
+interface IScheduler
+{
+    bool HasCommand();
+    CTask Select();
+    void Add(CTask cmd);
+}
+
+class Scheduler : IScheduler{
+    BlockingCollection<CTask> tasks = new BlockingCollection<CTask>();
+    public bool HasCommand(){
+        return (tasks.Count > 0);
+    }
+    public CTask Select(){
+        return tasks.Take();
+    }
+    public void Add(CTask cmd){
+        tasks.Add(cmd);
+    }
+}
+
+#!csharp
+
+using System.Threading;
+using System.Collections.Concurrent;
+
+delegate void Handler (ICommand com, Exception exc);
+Handler ExceptionHandler = (ICommand com, Exception exc) => Console.WriteLine($"Ошибка выполения команды {com.GetType().Name}");
+
+
+class Message{
+    public int receiver_id;
+    public string mes;
+    public Message(int receiver_id, string mes){
+        this.receiver_id = receiver_id;
+        this.mes = mes;
+    }
+}
+
+
+class Router{
+    BlockingCollection<Message> input_data;
+    Dictionary<int, List<string>> storage = new Dictionary<int, List<string>>();
+    ManualResetEvent can_work;
+    public int router_wait = 0;
+    List<int> active_command_ids;
+    public Router(ref BlockingCollection<Message> input_data, ref ManualResetEvent can_work, ref Dictionary<int, List<string>> storage,  ref List<int> active_command_ids){
+         this.input_data = input_data;
+         this.can_work = can_work;
+         this.storage = storage;
+         this.active_command_ids = active_command_ids;
+    }
+    public void Loop(){
+        while (true){
+            Interlocked.Increment(ref this.router_wait);
+            Message m  = input_data.Take();
+            can_work.WaitOne();
+            Interlocked.Decrement(ref this.router_wait);
+            if (!storage.ContainsKey(m.receiver_id)){
+                if (!this.active_command_ids.Contains(m.receiver_id)){Console.WriteLine($"Адресат сообщения {m.mes} не найден");}
+                else{storage.Add(m.receiver_id, new List<string>() {m.mes});}
+            }
+            else{
+                storage[m.receiver_id].Add(m.mes);
+            }
+        }
+    }
+
+}
+
+
+
+class ServerThread{
+    public BlockingCollection<CTask> queue;
+    Handler ExceptionHandler;
+    Scheduler sh = new Scheduler();
+    bool need_delivery = true;
+
+    BlockingCollection<Message> router_input;
+    ManualResetEvent can_router_work = new ManualResetEvent(false);
+    Dictionary<int, List<string>> router_storage = new Dictionary<int, List<string>>();
+
+    Router router_obj;
+    Thread router_thread;
+    List<int> active_command_ids = new List<int>();
+
+
+    public ServerThread(BlockingCollection<CTask> queue, Handler ExceptionHandler, BlockingCollection<Message> router_input){
+        this.queue = queue;
+        this.ExceptionHandler = ExceptionHandler;
+        this.router_input = router_input;
+        this.router_obj = new Router(ref router_input, ref can_router_work, ref router_storage, ref active_command_ids);
+        this.router_thread = new Thread(new ThreadStart(router_obj.Loop));
+    }
+
+    void DeliveryThread(){
+        Thread d = new Thread(new ThreadStart(() => {
+            while (need_delivery){
+                CTask ta = queue.Take();
+                sh.Add(ta);
+                active_command_ids.Add(ta.com.GetId());
+            }
+        }));
+        d.Start();
+    }
+
+    public void Loop(){
+        DeliveryThread();
+        router_thread.Start();
+        string c_name;
+        ICommand c;
+        CTask t;
+        bool target_soft_stop = false;
+        while (true){
+            can_router_work.Reset();
+            while (router_obj.router_wait == 0){Thread.Sleep(10);}
+            t = sh.Select();
+            t.run_count_need--;
+            c = t.com;
+            if (router_storage.ContainsKey(c.GetId()) && (router_storage[c.GetId()].Count > 0)){
+                while (router_storage[c.GetId()].Count != 0){
+                    string mes = router_storage[c.GetId()][0];
+                    c.ReadMessage(mes);
+                    router_storage[c.GetId()].Remove(mes);
+                }
+            }
+            can_router_work.Set();
+            try{c.Execute();}
+            catch (Exception ex){ExceptionHandler(c, ex);}
+            c_name = c.GetType().Name;
+            if (c_name == "HardStop"){break;}
+            if (c_name == "SoftStop"){target_soft_stop = true;}
+            if (target_soft_stop) {
+                if ((queue.Count == 0) && !sh.HasCommand()) {Console.WriteLine("SoftStop"); break;}
+            }
+            if (t.run_count_need != 0){
+                sh.Add(t);
+            }
+            else {
+                can_router_work.Reset();
+                while (router_obj.router_wait == 0){Thread.Sleep(10);}
+                if (router_storage.ContainsKey(c.GetId())){
+                    router_storage.Remove(c.GetId());
+                }
+            }
+            can_router_work.Set();
+        }
+        need_delivery = false;
+        
+    }
+}
+
+#!csharp
+
+using System.Threading;
+using System.Collections.Concurrent;
+
+BlockingCollection<CTask> q1 = new BlockingCollection<CTask>(); 
+BlockingCollection<Message> router_input = new BlockingCollection<Message>();
+ServerThread s1 = new ServerThread(q1, ExceptionHandler, router_input);
+q1.Add(new CTask(new TestCommand(1), 5));
+q1.Add(new CTask(new TestCommand(2), 5));
+q1.Add(new CTask(new SoftStop(3), 1));
+Thread th1 = new Thread(new ThreadStart(s1.Loop));
+th1.Start();
+router_input.Add(new Message(1, "message 1"));
+router_input.Add(new Message(1, "message 2"));
+router_input.Add(new Message(2, "message 3"));
+router_input.Add(new Message(5, "some message"));
+th1.Join();
