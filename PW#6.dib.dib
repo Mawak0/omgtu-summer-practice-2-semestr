@@ -37,9 +37,184 @@
 Для этого следует использовать условные события, которые позволят убедиться, что оба потока запустились и готовы читать и писать объекты и только потом запускать таймер.
 2. Для итогового вывода сравнивать усредненные значения.
 
-#!markdown
+#!csharp
 
-// здесь писать код
+//#r "nuget:ScottPlot, 5.0.*"
+
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Threading;
+using System.Diagnostics;
+using Microsoft.DotNet.Interactive.Formatting;
+
+Formatter.Register(typeof(ScottPlot.Plot), (p, w) => 
+    w.Write(((ScottPlot.Plot)p).GetImageHtml(400, 300)), HtmlFormatter.MimeType);
+
+
+
+class BlockingReader{
+    BlockingCollection<int> input;
+    public static int readers_online = 0;
+    Stopwatch stopWatch;
+
+    public BlockingReader(ref BlockingCollection<int> input, ref Stopwatch stopWatch){
+        this.input = input;
+        this.stopWatch = stopWatch;
+    }
+
+    public void Loop(){
+        int messages_readed = 0;
+        Interlocked.Increment(ref BlockingReader.readers_online);
+        foreach (int data in input.GetConsumingEnumerable()){
+            messages_readed += 1;
+        }
+        stopWatch.Stop();
+        Interlocked.Decrement(ref BlockingReader.readers_online);
+    }
+}
+
+
+class BlockingWriter{
+    BlockingCollection<int> output;
+    Stopwatch stopWatch;
+    public BlockingWriter(ref BlockingCollection<int> output, ref Stopwatch stopWatch){
+        this.output = output;
+        this.stopWatch = stopWatch;
+    }
+
+    public void Loop(){
+        int messages_writed = 0;
+        while (BlockingReader.readers_online == 0){}
+        stopWatch.Start();
+        while (true){
+            output.Add(0);
+            messages_writed += 1;
+            if (messages_writed == 1000000){
+                output.CompleteAdding();
+                break;
+            }
+        }
+    }
+}
+
+Stopwatch stopWatch = new Stopwatch();
+long aver_time_blocking = -1;
+for (int i = 1; i < 10; i++){
+    stopWatch.Reset();
+    var blocking_c = new BlockingCollection<int>(5);
+    BlockingReader Blocking_reader_obj = new BlockingReader(ref blocking_c, ref stopWatch);
+    BlockingWriter Blocking_writer_obj = new BlockingWriter(ref blocking_c, ref stopWatch);
+    Thread t1 = new Thread(new ThreadStart(Blocking_reader_obj.Loop));
+    Thread t2 = new Thread(new ThreadStart(Blocking_writer_obj.Loop));
+    t1.Start();
+    t2.Start();
+    t1.Join();
+    t2.Join();
+    if (aver_time_blocking == -1){aver_time_blocking = stopWatch.ElapsedMilliseconds;}
+    else {aver_time_blocking = (aver_time_blocking + stopWatch.ElapsedMilliseconds)/2;}
+}
+Console.WriteLine($"BlockingCollection - {aver_time_blocking} миллисекунд");
+stopWatch.Reset();
+
+
+
+class ConcurrentReader{
+    ConcurrentQueue<int> input;
+    public static int readers_online = 0;
+    Stopwatch stopWatch;
+    int count_messages_to_read = 0;
+
+    public ConcurrentReader(ref ConcurrentQueue<int> input, ref Stopwatch stopWatch, int count_messages_to_read){
+        this.input = input;
+        this.stopWatch = stopWatch;
+        this.count_messages_to_read = count_messages_to_read;
+    }
+
+    public void Loop(){
+        int messages_readed = 0;
+        int result;
+        Interlocked.Increment(ref ConcurrentReader.readers_online);
+        while (messages_readed != count_messages_to_read){
+            input.TryDequeue(out result);
+            messages_readed += 1;
+        }
+        stopWatch.Stop();
+        Interlocked.Decrement(ref ConcurrentReader.readers_online);
+    }
+}
+
+
+class ConcurrentWriter{
+    ConcurrentQueue<int> output;
+    Stopwatch stopWatch;
+    int count_messages_to_write;
+    public ConcurrentWriter(ref ConcurrentQueue<int> output, ref Stopwatch stopWatch, int count_messages_to_write){
+        this.output = output;
+        this.stopWatch = stopWatch;
+        this.count_messages_to_write = count_messages_to_write;
+    }
+
+    public void Loop(){
+        int messages_writed = 0;
+        while (ConcurrentReader.readers_online == 0){}
+        stopWatch.Start();
+        while (true){
+            output.Enqueue(0);
+            messages_writed += 1;
+            if (messages_writed == count_messages_to_write){
+                break;
+            }
+        }
+    }
+}
+
+long aver_time_concurrent = -1;
+for (int i = 0; i < 10; i++){
+    stopWatch.Reset();
+    var concurrent_q = new ConcurrentQueue<int>();
+    ConcurrentReader Concurrent_reader_obj = new ConcurrentReader(ref concurrent_q, ref stopWatch, 1000000);
+    ConcurrentWriter Concurrent_writer_obj = new ConcurrentWriter(ref concurrent_q, ref stopWatch, 1000000);
+    Thread t3 = new Thread(new ThreadStart(Concurrent_reader_obj.Loop));
+    Thread t4 = new Thread(new ThreadStart(Concurrent_writer_obj.Loop));
+    t3.Start();
+    t4.Start();
+    t3.Join();
+    t4.Join();
+    if (aver_time_concurrent == -1){aver_time_concurrent = stopWatch.ElapsedMilliseconds;}
+    else {aver_time_concurrent = (aver_time_concurrent + stopWatch.ElapsedMilliseconds)/2;}
+}
+Console.WriteLine($"ConcurrentQueue - {stopWatch.ElapsedMilliseconds} миллисекунд");
+stopWatch.Reset();
+
+long aver_time_queue = -1;
+for (int iter = 0; iter < 10; iter++){
+    Queue<int> q = new Queue<int>();
+    stopWatch.Start();
+    for (int i = 0; i< 1000000; i++){
+        q.Enqueue(0);
+    }
+    int res;
+    for (int i = 0; i < q.Count; i++){
+        res = q.Dequeue();
+    }
+    stopWatch.Stop();
+    if (aver_time_queue == -1){aver_time_queue = stopWatch.ElapsedMilliseconds;}
+    else {aver_time_queue = (aver_time_queue + stopWatch.ElapsedMilliseconds)/2;}
+    stopWatch.Reset();
+}
+Console.WriteLine($"Queue - {aver_time_queue} миллисекунд");
+
+
+ScottPlot.Plot Plot = new();
+var bar1 = Plot.Add.Bars(new double[] {(double)1}, new double[] {(double)aver_time_blocking});
+var bar2 = Plot.Add.Bars(new double[] {(double)2}, new double[] {(double)aver_time_concurrent});
+var bar3 = Plot.Add.Bars(new double[] {(double)3}, new double[] {(double)aver_time_queue});
+bar1.LegendText = "BlockingCollection";
+bar2.LegendText = "ConcurrentQueue";
+bar3.LegendText = "Queue";
+Plot.ShowLegend(ScottPlot.Alignment.UpperLeft);
+Plot.Axes.Margins(bottom: 0, top: 0.5);
+Plot
 
 #!markdown
 
