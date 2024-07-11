@@ -35,9 +35,17 @@
 
 #!csharp
 
+public interface ICommand
+{
+    void Execute();
+    int WorkLeft();
+}
+
+
+
 public interface IScheduler
 {
-    bool HasCommand()
+    bool HasCommand();
     ICommand Select();
     void Add(ICommand cmd);
 }
@@ -55,3 +63,165 @@ public interface IScheduler
 Необходимо учесть этот момент при реализации очереди.
 
 2. Для обепечения справедливости стратегии планировщика в слабом смысле использовать стратегию Round Robbin (циклическую) для определения следующего потока на исполнение.
+
+#!csharp
+
+using System.Threading;
+
+class CommandOne : ICommand{
+    public int work_left = 1;
+    public void Execute(){
+        Thread.Sleep(500);
+        Console.WriteLine("Executed CommandOne");
+        work_left--;
+    }
+    public int WorkLeft(){
+        return work_left;
+    }
+
+}
+
+class CommandTwo : ICommand{
+    public int work_left = 5;
+    public void Execute(){
+        Thread.Sleep(300);
+        Console.WriteLine("Executed CommandTwo");
+        work_left--;
+    }
+    public int WorkLeft(){
+        return work_left;
+    }
+
+}
+
+class CommandLong : ICommand{
+    public int work_left = 10;
+    public void Execute(){
+        Thread.Sleep(300);
+        Console.WriteLine("Executed CommandLong");
+        work_left--;
+    }
+    public int WorkLeft(){
+        return work_left;
+    }
+
+}
+
+class HardStop : ICommand{
+    public int work_left = 1;
+    public void Execute(){
+        Console.WriteLine("Executed HardStop");
+        work_left--;
+    }
+    public int WorkLeft(){
+        return work_left;
+    }
+
+}
+
+class SoftStop : ICommand{
+    public int work_left = 1;
+    public void Execute(){
+        Console.WriteLine("Executed SoftStop");
+        work_left--;
+    }
+    public int WorkLeft(){
+        return work_left;
+    }
+}
+
+class CommandError : ICommand{
+    public int work_left = 1;
+    public void Execute(){
+        Thread.Sleep(100);
+        work_left--;
+        throw new Exception ("Test Error");
+    }
+    public int WorkLeft(){
+        return work_left;
+    }
+}
+
+#!csharp
+
+using System.Collections.Concurrent;
+
+class Scheduler : IScheduler{
+    BlockingCollection<ICommand> tasks = new BlockingCollection<ICommand>();
+    public bool HasCommand(){
+        return (tasks.Count > 0);
+    }
+    public ICommand Select(){
+        return tasks.Take();
+    }
+    public void Add(ICommand cmd){
+        tasks.Add(cmd);
+    }
+}
+
+#!csharp
+
+using System.Threading;
+using System.Collections.Concurrent;
+
+delegate void Handler (ICommand com, Exception exc);
+Handler ExceptionHandler = (ICommand com, Exception exc) => Console.WriteLine($"Ошибка выполения команды {com.GetType().Name}");
+
+class ServerThread{
+    public BlockingCollection<ICommand> queue;
+    Handler ExceptionHandler;
+    Scheduler sh = new Scheduler();
+    bool need_delivery = true;
+    public ServerThread(ref BlockingCollection<ICommand> queue, Handler ExceptionHandler){
+        this.queue = queue;
+        this.ExceptionHandler = ExceptionHandler;
+    }
+
+    void DeliveryThread(){
+        Thread d = new Thread(new ThreadStart(() => {
+            while (need_delivery){
+                sh.Add(queue.Take());
+            }
+        }));
+        d.Start();
+    }
+
+    public void Loop(){
+        DeliveryThread();
+        string c_name;
+        ICommand c;
+        bool target_soft_stop = false;
+        while (true){
+            c = sh.Select();
+            try{c.Execute();}
+            catch (Exception ex){ExceptionHandler(c, ex);}
+            c_name = c.GetType().Name;
+            if (c_name == "HardStop"){break;}
+            if (c_name == "SoftStop"){target_soft_stop = true;}
+            if (target_soft_stop) {
+                if ((queue.Count == 0) && !sh.HasCommand()) {Console.WriteLine("SoftStop"); break;}
+            }
+            if (c.WorkLeft() != 0){
+                sh.Add(c);
+            }
+        }
+        need_delivery = false;
+        
+    }
+}
+
+#!csharp
+
+BlockingCollection<ICommand> q1 = new BlockingCollection<ICommand>(); 
+ServerThread s1 = new ServerThread(ref q1, ExceptionHandler);
+q1.Add(new CommandOne());
+q1.Add(new CommandTwo());
+q1.Add(new CommandLong());
+Thread th1 = new Thread(new ThreadStart(s1.Loop));
+th1.Start();
+Thread.Sleep(9000);
+q1.Add(new CommandOne());
+q1.Add(new SoftStop());
+q1.Add(new CommandOne());
+th1.Join();
+Console.WriteLine($"После остановки потока, в очереди осталось {q1.Count()} команд");
