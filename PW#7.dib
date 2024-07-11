@@ -38,3 +38,109 @@ ServerThread может менять свое поведение для обра
 Отсутствие Команд в очереди потока не должно требовать значительных затрат процессорного времени. Значительными считаются затраты, которые зависят от времени простоя потока.
 
 Написать проверку, которая гарантирует правильное выполнение команд HardStop и SoftStop.
+
+#!csharp
+
+using System.Threading;
+
+class CommandOne : ICommand{
+    public void Execute(){
+        Thread.Sleep(500);
+        Console.WriteLine("Executed CommandOne");
+    }
+
+}
+
+class CommandTwo : ICommand{
+    public void Execute(){
+        Thread.Sleep(300);
+        Console.WriteLine("Executed CommandTwo");
+    }
+
+}
+
+class HardStop : ICommand{
+    public void Execute(){
+        Console.WriteLine("Executed HardStop");
+    }
+
+}
+
+class SoftStop : ICommand{
+    public void Execute(){
+        Console.WriteLine("Executed SoftStop");
+    }
+}
+
+class CommandError : ICommand{
+    public void Execute(){
+        Thread.Sleep(100);
+        throw new Exception ("Test Error");
+    }
+}
+
+#!csharp
+
+using System.Threading;
+using System.Collections.Concurrent;
+
+delegate void Handler (ICommand com, Exception exc);
+Handler ExceptionHandler = (ICommand com, Exception exc) => Console.WriteLine($"Ошибка выполения команды {com.GetType().Name}");
+
+class ServerThread{
+    public ConcurrentQueue<ICommand> queue;
+    Handler ExceptionHandler;
+    public ServerThread(ref ConcurrentQueue<ICommand> queue, Handler ExceptionHandler){
+        this.queue = queue;
+        this.ExceptionHandler = ExceptionHandler;
+    }
+    public void Loop(){
+        string c_name;
+        ICommand c;
+        bool target_soft_stop = false;
+        while (true){
+            while (queue.IsEmpty){Thread.Sleep(10);}
+            queue.TryDequeue(out c);
+            try{c.Execute();}
+            catch (Exception ex){ExceptionHandler(c, ex);}
+            c_name = c.GetType().Name;
+            if (c_name == "HardStop"){break;}
+            if (c_name == "SoftStop"){target_soft_stop = true;}
+            if (target_soft_stop) {
+                if (queue.Count == 0) {break;}
+            }
+        }
+    }
+}
+
+#!csharp
+
+//проверим корректность программы
+
+//1 случай - HardStop
+ConcurrentQueue<ICommand> q1 = new ConcurrentQueue<ICommand>(); 
+ServerThread s1 = new ServerThread(ref q1, ExceptionHandler);
+q1.Enqueue(new CommandOne());
+q1.Enqueue(new CommandTwo());
+q1.Enqueue(new HardStop());
+q1.Enqueue(new CommandOne());
+Thread th1 = new Thread(new ThreadStart(s1.Loop));
+th1.Start();
+th1.Join();
+Console.WriteLine($"После остановки потока, в очереди осталось еще {q1.Count()} команда");
+
+#!csharp
+
+//проверим корректность программы
+
+//2 случай - SoftStop
+ConcurrentQueue<ICommand> q1 = new ConcurrentQueue<ICommand>(); 
+ServerThread s1 = new ServerThread(ref q1, ExceptionHandler);
+q1.Enqueue(new CommandOne());
+q1.Enqueue(new CommandTwo());
+q1.Enqueue(new SoftStop());
+q1.Enqueue(new CommandOne());
+Thread th1 = new Thread(new ThreadStart(s1.Loop));
+th1.Start();
+th1.Join();
+Console.WriteLine($"После остановки потока, в очереди не осталось команд ({q1.Count()})");
