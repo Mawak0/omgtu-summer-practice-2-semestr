@@ -39,3 +39,123 @@ public class TestCommand(int id) : ICommand
 #!markdown
 
 Необходимо проиллюстрировать выполнение 5 экземпляров TestCommand 3 раза, затем остановить поток с помощью HardStop.
+
+#!csharp
+
+using System.Collections.Concurrent;
+
+class HardStop : ICommand{
+    public int work_left = 1;
+    public void Execute(){
+        Console.WriteLine("Executed HardStop");
+        work_left--;
+    }
+    public int WorkLeft(){
+        return work_left;
+    }
+
+}
+
+class SoftStop : ICommand{
+    public int work_left = 1;
+    public void Execute(){
+        Console.WriteLine("Executed SoftStop");
+        work_left--;
+    }
+    public int WorkLeft(){
+        return work_left;
+    }
+}
+
+class CTask{
+    public int run_count_need;
+    public ICommand com;
+    public CTask(ICommand com, int run_count_need){
+        this.com = com;
+        this.run_count_need = run_count_need;
+    }
+}
+
+interface IScheduler
+{
+    bool HasCommand();
+    CTask Select();
+    void Add(CTask cmd);
+}
+
+class Scheduler : IScheduler{
+    BlockingCollection<CTask> tasks = new BlockingCollection<CTask>();
+    public bool HasCommand(){
+        return (tasks.Count > 0);
+    }
+    public CTask Select(){
+        return tasks.Take();
+    }
+    public void Add(CTask cmd){
+        tasks.Add(cmd);
+    }
+}
+
+#!csharp
+
+using System.Threading;
+using System.Collections.Concurrent;
+
+delegate void Handler (ICommand com, Exception exc);
+Handler ExceptionHandler = (ICommand com, Exception exc) => Console.WriteLine($"Ошибка выполения команды {com.GetType().Name}");
+
+class ServerThread{
+    public BlockingCollection<CTask> queue;
+    Handler ExceptionHandler;
+    Scheduler sh = new Scheduler();
+    bool need_delivery = true;
+    public ServerThread(BlockingCollection<CTask> queue, Handler ExceptionHandler){
+        this.queue = queue;
+        this.ExceptionHandler = ExceptionHandler;
+    }
+
+    void DeliveryThread(){
+        Thread d = new Thread(new ThreadStart(() => {
+            while (need_delivery){
+                sh.Add(queue.Take());
+            }
+        }));
+        d.Start();
+    }
+
+    public void Loop(){
+        DeliveryThread();
+        string c_name;
+        ICommand c;
+        CTask t;
+        bool target_soft_stop = false;
+        while (true){
+            t = sh.Select();
+            t.run_count_need--;
+            c = t.com;
+            try{c.Execute();}
+            catch (Exception ex){ExceptionHandler(c, ex);}
+            c_name = c.GetType().Name;
+            if (c_name == "HardStop"){break;}
+            if (c_name == "SoftStop"){target_soft_stop = true;}
+            if (target_soft_stop) {
+                if ((queue.Count == 0) && !sh.HasCommand()) {Console.WriteLine("SoftStop"); break;}
+            }
+            if (t.run_count_need != 0){
+                sh.Add(t);
+            }
+        }
+        need_delivery = false;
+        
+    }
+}
+
+#!csharp
+
+BlockingCollection<CTask> q1 = new BlockingCollection<CTask>(); 
+ServerThread s1 = new ServerThread(q1, ExceptionHandler);
+for (int i =0; i < 5; i++){q1.Add(new CTask(new TestCommand(i), 3));}
+q1.Add(new CTask(new SoftStop(), 1));
+Thread th1 = new Thread(new ThreadStart(s1.Loop));
+th1.Start();
+th1.Join();
